@@ -1,0 +1,244 @@
+// =============================================================
+// VisionTrade AI — Signals + Alerts (APEX engine, strategy-matched)
+// Pine Script v5 · indicator (alerts / bot webhooks / manual trading)
+// -------------------------------------------------------------
+// Same confluence engine as VisionTradeAI_APEX_v5, wired to emit the
+// EXACT entries the backtested strategy takes, with a preset switch for
+// the two tuned configs from BACKTEST_RESULTS.md:
+//
+//   • "4H Swing" — Both directions, structural stop, flip on opposite
+//   • "1H Scalp" — Both directions, structural stop, flip on opposite,
+//                  faster HTF proxy + shorter cooldown
+//
+// HTF filter uses the on-chart proxy (length-scaled EMAs) so alerts match
+// the backtest. Switch htfMode to "TradingView HTF" for true MTF (numbers
+// will then differ slightly from the backtested results).
+// =============================================================
+
+//@version=5
+indicator("VisionTrade AI — Signals (APEX)", overlay=true, max_lines_count=500, max_labels_count=500)
+
+preset   = input.string("4H Swing", "Preset", options=["4H Swing", "1H Scalp", "Custom"], group="Preset")
+tradeDir = input.string("Both", "Trade direction", options=["Both", "Long", "Short"], group="Preset")
+htfMode  = input.string("Proxy (scaled EMA)", "HTF mode", options=["Proxy (scaled EMA)", "TradingView HTF", "Off"], group="Preset")
+htfTf    = input.timeframe("240", "TradingView HTF timeframe", group="Preset")
+
+cMinScore = input.int(72, "Custom · Min Confluence Score", 40, 100, group="Custom")
+cCooldown = input.int(3,  "Custom · Cooldown (bars)", 0, 40, group="Custom")
+cHtfMult  = input.int(6,  "Custom · HTF multiplier", 1, 24, group="Custom")
+cSlMult   = input.float(2.0, "Custom · ATR Stop Multiplier", 0.5, step=0.1, group="Custom")
+
+isSwing = preset == "4H Swing"
+isScalp = preset == "1H Scalp"
+pMinScore = isSwing ? 76 : isScalp ? 66 : cMinScore
+pCooldown = isSwing ? 3  : isScalp ? 2  : cCooldown
+pHtfMult  = isSwing ? 6  : isScalp ? 4  : cHtfMult
+pSlMult   = isSwing ? 2.0 : isScalp ? 2.0 : cSlMult
+pSwBuf    = 0.5
+
+// ── engine constants (APEX v5 defaults) ──
+fastLen = 8
+trigLen = 21
+midLen = 50
+anchorLen = 100
+trendLen = 200
+rsiLen = 14
+rsiOB = 72
+rsiOS = 28
+rsiSmL = 3
+macdFast = 12
+macdSlow = 26
+macdSig = 9
+adxLen = 14
+adxSmth = 14
+adxFullMin = 22.0
+adxPartMin = 18.0
+volLen = 20
+volMult = 1.15
+strLen = 20
+atrLen = 14
+atrMinPct = 0.12
+atrMaxPct = 6.0
+sqzLen = 20
+bbMult = 2.0
+kcMult = 1.5
+useWide = true
+tp1R = 2.5
+tp2R = 4.0
+tp3R = 5.5
+
+// ── core ──
+fastEma = ta.ema(close, fastLen)
+trigEma = ta.ema(close, trigLen)
+midEma = ta.ema(close, midLen)
+anchorEma = ta.ema(close, anchorLen)
+trendEma = ta.ema(close, trendLen)
+atrVal = ta.atr(atrLen)
+rsiRaw = ta.rsi(close, rsiLen)
+rsiSmth = ta.ema(rsiRaw, rsiSmL)
+[macdLine, sigLine, histLine] = ta.macd(close, macdFast, macdSlow, macdSig)
+[plusDI, minusDI, adxVal] = ta.dmi(adxLen, adxSmth)
+volSma = ta.sma(volume, volLen)
+atrPct = atrVal / close * 100
+
+// ── HTF ──
+htfOff = htfMode == "Off"
+useProxy = htfMode == "Proxy (scaled EMA)"
+pTrendE = ta.ema(close, trendLen * pHtfMult)
+pFastE = ta.ema(close, fastLen * pHtfMult)
+pSlowE = ta.ema(close, trigLen * pHtfMult)
+tvClose = request.security(syminfo.tickerid, htfTf, close[1], barmerge.gaps_off, barmerge.lookahead_off)
+tvTrendE = request.security(syminfo.tickerid, htfTf, ta.ema(close, trendLen)[1], barmerge.gaps_off, barmerge.lookahead_off)
+tvFastE = request.security(syminfo.tickerid, htfTf, ta.ema(close, fastLen)[1], barmerge.gaps_off, barmerge.lookahead_off)
+tvSlowE = request.security(syminfo.tickerid, htfTf, ta.ema(close, trigLen)[1], barmerge.gaps_off, barmerge.lookahead_off)
+htfClose = useProxy ? close : tvClose
+htfTrendE = useProxy ? pTrendE : tvTrendE
+htfFastE = useProxy ? pFastE : tvFastE
+htfSlowE = useProxy ? pSlowE : tvSlowE
+htfBull = htfOff or (htfClose > htfTrendE and htfFastE > htfSlowE)
+htfBear = htfOff or (htfClose < htfTrendE and htfFastE < htfSlowE)
+
+// ── trend / structure / momentum (identical to APEX v5) ──
+bullPairs = (fastEma > trigEma ? 1 : 0) + (trigEma > midEma ? 1 : 0) + (midEma > anchorEma ? 1 : 0) + (anchorEma > trendEma ? 1 : 0)
+bearPairs = (fastEma < trigEma ? 1 : 0) + (trigEma < midEma ? 1 : 0) + (midEma < anchorEma ? 1 : 0) + (anchorEma < trendEma ? 1 : 0)
+emaBullStack = bullPairs == 4
+emaBearStack = bearPairs == 4
+emaBullPart = bullPairs == 3
+emaBearPart = bearPairs == 3
+trendSlope = trendEma - trendEma[3]
+priceBullTrend = close > trendEma and trendSlope > 0
+priceBearTrend = close < trendEma and trendSlope < 0
+anchorRespBull = close > anchorEma and anchorEma > anchorEma[3] and ta.lowest(low, 5) >= anchorEma - atrVal * 0.75
+anchorRespBear = close < anchorEma and anchorEma < anchorEma[3] and ta.highest(high, 5) <= anchorEma + atrVal * 0.75
+
+swingHigh = ta.highest(high, strLen)[1]
+swingLow = ta.lowest(low, strLen)[1]
+bosUp = ta.crossover(close, swingHigh)
+bosDown = ta.crossunder(close, swingLow)
+structLongOk = bosUp or (close > trigEma and close > trigEma[1])
+structShortOk = bosDown or (close < trigEma and close < trigEma[1])
+
+rsiLongOk = rsiSmth > 45 and rsiSmth < rsiOB and rsiSmth > rsiSmth[2]
+rsiShortOk = rsiSmth < 55 and rsiSmth > rsiOS and rsiSmth < rsiSmth[2]
+macdLongOk = macdLine > sigLine and histLine > histLine[1] and histLine > 0
+macdShortOk = macdLine < sigLine and histLine < histLine[1] and histLine < 0
+adxFull = adxVal >= adxFullMin
+adxPartial = adxVal >= adxPartMin and adxVal < adxFullMin
+adxOk = adxVal >= adxPartMin
+volRegimeOk = atrPct >= atrMinPct and atrPct <= atrMaxPct
+volumeOk = volume > volSma * volMult
+
+basis = ta.sma(close, sqzLen)
+dev = bbMult * ta.stdev(close, sqzLen)
+kcRange = ta.sma(ta.tr(true), sqzLen)
+squeezeOn = (basis - dev) > (basis - kcMult * kcRange) and (basis + dev) < (basis + kcMult * kcRange)
+squeezeFired = squeezeOn[1] and not squeezeOn
+
+bearDivg = close > close[2] and not (rsiSmth > rsiSmth[2])
+bullDivg = close < close[2] and not (rsiSmth < rsiSmth[2])
+
+emaCrossUp = ta.crossover(fastEma, trigEma)
+emaCrossDown = ta.crossunder(fastEma, trigEma)
+pullbackLong = close > trigEma and low <= trigEma + atrVal * 0.30 and close > open
+pullbackShort = close < trigEma and high >= trigEma - atrVal * 0.30 and close < open
+triggerLong = emaCrossUp or bosUp or pullbackLong or squeezeFired
+triggerShort = emaCrossDown or bosDown or pullbackShort or squeezeFired
+
+tStackL = emaBullStack ? 14 : emaBullPart ? 7 : 0
+tStackS = emaBearStack ? 14 : emaBearPart ? 7 : 0
+tScoreL = (priceBullTrend ? 12 : 0) + tStackL + (htfBull ? 9 : 0)
+tScoreS = (priceBearTrend ? 12 : 0) + tStackS + (htfBear ? 9 : 0)
+adxPts = adxFull ? 9 : adxPartial ? 4 : 0
+mScoreL = (rsiLongOk ? 9 : 0) + (macdLongOk ? 11 : 0) + adxPts + (anchorRespBull ? 6 : 0)
+mScoreS = (rsiShortOk ? 9 : 0) + (macdShortOk ? 11 : 0) + adxPts + (anchorRespBear ? 6 : 0)
+sScoreL = bosUp ? 20 : structLongOk ? 10 : 0
+sScoreS = bosDown ? 20 : structShortOk ? 10 : 0
+volScoreV = volumeOk ? 5 : 0
+vrScoreV = volRegimeOk ? 5 : 0
+longScore = math.min(tScoreL + mScoreL + sScoreL + volScoreV + vrScoreV, 100)
+shortScore = math.min(tScoreS + mScoreS + sScoreS + volScoreV + vrScoreV, 100)
+
+var int lastSigBar = na
+onCooldown = not na(lastSigBar) and (bar_index - lastSigBar) < pCooldown
+longSignal = triggerLong and priceBullTrend and htfBull and rsiLongOk and macdLongOk and adxOk and volumeOk and structLongOk and volRegimeOk and not bearDivg and longScore >= pMinScore and not onCooldown
+shortSignal = triggerShort and priceBearTrend and htfBear and rsiShortOk and macdShortOk and adxOk and volumeOk and structShortOk and volRegimeOk and not bullDivg and shortScore >= pMinScore and not onCooldown
+finalLongRaw = longSignal and (not shortSignal or longScore > shortScore)
+finalShortRaw = shortSignal and (not longSignal or shortScore > longScore)
+allowLong = tradeDir != "Short"
+allowShort = tradeDir != "Long"
+finalLong = finalLongRaw and allowLong
+finalShort = finalShortRaw and allowShort
+if finalLong or finalShort
+    lastSigBar := bar_index
+
+// ── flip-on-opposite position tracking so alerts mirror the strategy ──
+var int posDir = 0
+flipToLong = finalLong and posDir <= 0
+flipToShort = finalShort and posDir >= 0
+if flipToLong
+    posDir := 1
+if flipToShort
+    posDir := -1
+
+// ── risk levels (identical math to APEX v5) ──
+var float eEntry = na
+var float eStop = na
+var float eR = na
+var float eTP1 = na
+var float eTP2 = na
+var float eTP3 = na
+if flipToLong
+    aStop = close - atrVal * pSlMult
+    sStop = swingLow - atrVal * pSwBuf
+    w = useWide ? math.min(aStop, sStop) : aStop
+    eEntry := close
+    eStop := w
+    eR := close - w
+    eTP1 := close + eR * tp1R
+    eTP2 := close + eR * tp2R
+    eTP3 := close + eR * tp3R
+if flipToShort
+    aStop = close + atrVal * pSlMult
+    sStop = swingHigh + atrVal * pSwBuf
+    w = useWide ? math.max(aStop, sStop) : aStop
+    eEntry := close
+    eStop := w
+    eR := w - close
+    eTP1 := close - eR * tp1R
+    eTP2 := close - eR * tp2R
+    eTP3 := close - eR * tp3R
+
+// ── plots / markers ──
+plot(fastEma, "Fast EMA", color.new(color.aqua, 0))
+plot(trigEma, "Trigger EMA", color.new(color.orange, 0))
+plot(anchorEma, "Anchor EMA", color.new(color.blue, 10), 2)
+plot(trendEma, "Trend EMA", color.new(color.gray, 10), 2)
+bgcolor(priceBullTrend ? color.new(color.lime, 94) : priceBearTrend ? color.new(color.red, 94) : na)
+plotshape(flipToLong, "LONG", shape.labelup, location.belowbar, color.new(color.lime, 0), text="LONG", textcolor=color.black, size=size.small)
+plotshape(flipToShort, "SHORT", shape.labeldown, location.abovebar, color.new(color.red, 0), text="SHORT", textcolor=color.white, size=size.small)
+
+var line enL = na
+var line slL = na
+var line tp1L = na
+var line tp2L = na
+var line tp3L = na
+if (flipToLong or flipToShort) and not na(eStop)
+    line.delete(enL)
+    line.delete(slL)
+    line.delete(tp1L)
+    line.delete(tp2L)
+    line.delete(tp3L)
+    enL := line.new(bar_index, eEntry, bar_index + 1, eEntry, extend=extend.right, color=color.new(color.white, 20), style=line.style_dashed)
+    slL := line.new(bar_index, eStop, bar_index + 1, eStop, extend=extend.right, color=color.new(color.red, 0), width=2)
+    tp1L := line.new(bar_index, eTP1, bar_index + 1, eTP1, extend=extend.right, color=color.new(color.lime, 0), style=line.style_dashed)
+    tp2L := line.new(bar_index, eTP2, bar_index + 1, eTP2, extend=extend.right, color=color.new(color.lime, 30), style=line.style_dotted)
+    tp3L := line.new(bar_index, eTP3, bar_index + 1, eTP3, extend=extend.right, color=color.new(color.lime, 50), style=line.style_dotted)
+
+// ── alerts ──
+if flipToLong
+    alert('{"strategy":"VisionTradeAI","preset":"' + preset + '","side":"long","ticker":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","entry":' + str.tostring(eEntry) + ',"stop":' + str.tostring(eStop) + ',"tp1":' + str.tostring(eTP1) + ',"tp2":' + str.tostring(eTP2) + ',"tp3":' + str.tostring(eTP3) + ',"score":' + str.tostring(longScore) + '}', alert.freq_once_per_bar_close)
+if flipToShort
+    alert('{"strategy":"VisionTradeAI","preset":"' + preset + '","side":"short","ticker":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","entry":' + str.tostring(eEntry) + ',"stop":' + str.tostring(eStop) + ',"tp1":' + str.tostring(eTP1) + ',"tp2":' + str.tostring(eTP2) + ',"tp3":' + str.tostring(eTP3) + ',"score":' + str.tostring(shortScore) + '}', alert.freq_once_per_bar_close)
+
+alertcondition(flipToLong, "VisionTradeAI LONG", "VisionTradeAI LONG {{ticker}} {{interval}} @ {{close}}")
+alertcondition(flipToShort, "VisionTradeAI SHORT", "VisionTradeAI SHORT {{ticker}} {{interval}} @ {{close}}")

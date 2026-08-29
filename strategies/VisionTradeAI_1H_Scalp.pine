@@ -1,0 +1,308 @@
+// =============================================================
+// VisionTrade AI — 1H Scalp (APEX)
+// Both directions - structural stop - flip on opposite - verified BTC +193% / ETH +280% / SOL -33% (2023-2026, DD ~31-83%)
+// Tuned preset of VisionTradeAI_APEX_Strategy.pine — see BACKTEST_RESULTS.md
+// =============================================================
+
+// VisionTrade AI — APEX v5 · STRATEGY build (backtestable)
+// Pine Script v5
+// -------------------------------------------------------------
+// This is the APEX v5.0 confluence engine (identical signal
+// logic) wrapped in strategy.* calls so it can be backtested on
+// TradingView AND in PineTester.
+//
+// Differences vs the indicator:
+//   • Higher-timeframe filter is approximated on the chart TF with
+//     length-scaled EMAs (htfMult). Set htfMode = "TradingView HTF"
+//     to use real request.security when running on TradingView.
+//   • One configurable exit (TP + structural stop, optional trail
+//     / time-stop / opposite-signal) instead of the 3-line ladder.
+//   • Dashboard / drawings removed.
+//
+// Every parameter is an input so the PineTester optimizer can sweep it.
+// =============================================================
+
+//@version=5
+strategy("VisionTrade AI — 1H Scalp (APEX)", overlay=true,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=100,
+     initial_capital=10000, commission_type=strategy.commission.percent,
+     commission_value=0.05, slippage=2, pyramiding=0)
+
+// ───────────── INPUTS (engine) ─────────────
+grp_ma = "5-EMA Stack"
+fastLen   = input.int(8,   "Fast EMA",    minval=1, group=grp_ma)
+trigLen   = input.int(21,  "Trigger EMA", minval=1, group=grp_ma)
+midLen    = input.int(50,  "Mid EMA",     minval=1, group=grp_ma)
+anchorLen = input.int(100, "Anchor EMA",  minval=1, group=grp_ma)
+trendLen  = input.int(200, "Trend EMA",   minval=1, group=grp_ma)
+
+grp_htf = "Higher Timeframe"
+htfMode = input.string("Proxy (scaled EMA)", "HTF mode",
+     options=["Proxy (scaled EMA)", "TradingView HTF", "Off"], group=grp_htf)
+htfMult = input.int(4, "HTF multiplier (HTF bars / chart bar)", minval=1, maxval=24, group=grp_htf)
+htfTf   = input.timeframe("240", "TradingView HTF timeframe", group=grp_htf)
+
+grp_rsi = "RSI"
+useRsi = input.bool(true, "Enable RSI Filter", group=grp_rsi)
+rsiLen = input.int(14, "RSI Length", minval=2, group=grp_rsi)
+rsiOB  = input.int(72, "Overbought cap", minval=55, maxval=100, group=grp_rsi)
+rsiOS  = input.int(28, "Oversold floor", minval=0, maxval=45, group=grp_rsi)
+rsiSmL = input.int(3,  "RSI Smoothing EMA", minval=2, maxval=10, group=grp_rsi)
+
+grp_macd = "MACD"
+useMacd  = input.bool(true, "Enable MACD Filter", group=grp_macd)
+macdFast = input.int(12, "Fast", minval=1, group=grp_macd)
+macdSlow = input.int(26, "Slow", minval=1, group=grp_macd)
+macdSig  = input.int(9,  "Signal", minval=1, group=grp_macd)
+
+grp_adx = "ADX"
+useAdx     = input.bool(true, "Enable ADX Filter", group=grp_adx)
+adxLen     = input.int(14, "ADX Length", minval=1, group=grp_adx)
+adxSmth    = input.int(14, "ADX Smoothing", minval=1, group=grp_adx)
+adxFullMin = input.float(22.0, "Full Trend ADX", minval=5, step=0.5, group=grp_adx)
+adxPartMin = input.float(18.0, "Partial ADX", minval=5, step=0.5, group=grp_adx)
+
+grp_vol = "Volume"
+useVol  = input.bool(true, "Enable Volume Filter", group=grp_vol)
+volLen  = input.int(20, "SMA Length", minval=1, group=grp_vol)
+volMult = input.float(1.15, "Volume Multiplier", minval=0.1, step=0.05, group=grp_vol)
+
+grp_str = "Market Structure"
+useStr  = input.bool(true, "Use BOS Filter", group=grp_str)
+strLen  = input.int(20, "Structure Lookback", minval=5, group=grp_str)
+
+grp_vlt = "Volatility Regime"
+useVlt    = input.bool(true, "Enable Volatility Filter", group=grp_vlt)
+atrLen    = input.int(14, "ATR Length", minval=1, group=grp_vlt)
+atrMinPct = input.float(0.12, "Min ATR%", minval=0.02, step=0.02, group=grp_vlt)
+atrMaxPct = input.float(6.0,  "Max ATR%", minval=0.5, step=0.25, group=grp_vlt)
+
+grp_sqz = "Momentum Squeeze"
+useSqz  = input.bool(true, "Detect BB/KC Squeeze", group=grp_sqz)
+sqzLen  = input.int(20, "Squeeze Length", minval=5, group=grp_sqz)
+bbMult  = input.float(2.0, "Bollinger Mult", minval=0.5, step=0.1, group=grp_sqz)
+kcMult  = input.float(1.5, "Keltner Mult", minval=0.5, step=0.1, group=grp_sqz)
+
+grp_sig = "Signal Logic"
+minScore = input.int(66, "Minimum Confluence Score", minval=40, maxval=100, group=grp_sig)
+cooldown = input.int(2, "Signal Cooldown (bars)", minval=0, maxval=40, group=grp_sig)
+reqCross = input.bool(false, "Require EMA Crossover (strict trigger)", group=grp_sig)
+
+// ───────────── INPUTS (execution) ─────────────
+grp_exe = "Execution"
+tradeDir  = input.string("Both", "Trade direction", options=["Both","Long","Short"], group=grp_exe)
+slMult    = input.float(2.0, "ATR Stop Multiplier", minval=0.5, step=0.1, group=grp_exe)
+swBuf     = input.float(0.5, "Structural Stop ATR Buffer", minval=0.0, step=0.1, group=grp_exe)
+useWide   = input.bool(true, "Working stop = wider of ATR / structure", group=grp_exe)
+exitMode  = input.string("Opposite signal", "Exit mode",
+     options=["Take-profit + stop","ATR trail","Opposite signal","Time stop"], group=grp_exe)
+tpR       = input.float(3.0, "Take-profit (R multiple)", minval=0.5, step=0.5, group=grp_exe)
+trailR    = input.float(1.5, "Trail activation (R multiple)", minval=0.2, step=0.1, group=grp_exe)
+trailAtr  = input.float(2.5, "Trail distance (ATR)", minval=0.5, step=0.1, group=grp_exe)
+maxBars   = input.int(48, "Time stop (bars in trade)", minval=2, group=grp_exe)
+exitOpp   = input.bool(true, "Also exit on opposite signal", group=grp_exe)
+
+// ───────────── CORE CALCULATIONS ─────────────
+fastEma   = ta.ema(close, fastLen)
+trigEma   = ta.ema(close, trigLen)
+midEma    = ta.ema(close, midLen)
+anchorEma = ta.ema(close, anchorLen)
+trendEma  = ta.ema(close, trendLen)
+atrVal    = ta.atr(atrLen)
+
+rsiRaw  = ta.rsi(close, rsiLen)
+rsiSmth = ta.ema(rsiRaw, rsiSmL)
+
+[macdLine, sigLine, histLine] = ta.macd(close, macdFast, macdSlow, macdSig)
+[plusDI, minusDI, adxVal] = ta.dmi(adxLen, adxSmth)
+
+volSma = ta.sma(volume, volLen)
+atrPct = (atrVal / close) * 100
+
+// ───────────── HTF FILTER ─────────────
+htfOff   = htfMode == "Off"
+useProxy = htfMode == "Proxy (scaled EMA)"
+
+// proxy: emulate an HTF EMA stack with length-scaled EMAs on this TF
+pTrendE = ta.ema(close, trendLen * htfMult)
+pFastE  = ta.ema(close, fastLen  * htfMult)
+pSlowE  = ta.ema(close, trigLen  * htfMult)
+
+// real HTF (only meaningful on TradingView)
+tvClose  = request.security(syminfo.tickerid, htfTf, close[1], barmerge.gaps_off, barmerge.lookahead_off)
+tvTrendE = request.security(syminfo.tickerid, htfTf, ta.ema(close, trendLen)[1], barmerge.gaps_off, barmerge.lookahead_off)
+tvFastE  = request.security(syminfo.tickerid, htfTf, ta.ema(close, fastLen)[1],  barmerge.gaps_off, barmerge.lookahead_off)
+tvSlowE  = request.security(syminfo.tickerid, htfTf, ta.ema(close, trigLen)[1],  barmerge.gaps_off, barmerge.lookahead_off)
+
+htfClose  = useProxy ? close   : tvClose
+htfTrendE = useProxy ? pTrendE : tvTrendE
+htfFastE  = useProxy ? pFastE  : tvFastE
+htfSlowE  = useProxy ? pSlowE  : tvSlowE
+
+htfBull = htfOff or (htfClose > htfTrendE and htfFastE > htfSlowE)
+htfBear = htfOff or (htfClose < htfTrendE and htfFastE < htfSlowE)
+
+// ───────────── TREND ENGINE ─────────────
+bullPairs = (fastEma > trigEma ? 1 : 0) + (trigEma > midEma ? 1 : 0) + (midEma > anchorEma ? 1 : 0) + (anchorEma > trendEma ? 1 : 0)
+bearPairs = (fastEma < trigEma ? 1 : 0) + (trigEma < midEma ? 1 : 0) + (midEma < anchorEma ? 1 : 0) + (anchorEma < trendEma ? 1 : 0)
+emaBullStack = bullPairs == 4
+emaBearStack = bearPairs == 4
+emaBullPart  = bullPairs == 3
+emaBearPart  = bearPairs == 3
+
+trendSlope     = trendEma - trendEma[3]
+priceBullTrend = close > trendEma and trendSlope > 0
+priceBearTrend = close < trendEma and trendSlope < 0
+
+anchorSlopeUp  = anchorEma > anchorEma[3]
+anchorSlopeDn  = anchorEma < anchorEma[3]
+anchorRespBull = close > anchorEma and anchorSlopeUp and ta.lowest(low, 5)  >= anchorEma - atrVal * 0.75
+anchorRespBear = close < anchorEma and anchorSlopeDn and ta.highest(high, 5) <= anchorEma + atrVal * 0.75
+
+// ───────────── MARKET STRUCTURE ─────────────
+swingHigh = ta.highest(high, strLen)[1]
+swingLow  = ta.lowest(low,  strLen)[1]
+bosUp   = ta.crossover(close, swingHigh)
+bosDown = ta.crossunder(close, swingLow)
+structLongOk  = not useStr or bosUp   or (close > trigEma and close > trigEma[1])
+structShortOk = not useStr or bosDown or (close < trigEma and close < trigEma[1])
+
+// ───────────── MOMENTUM ENGINE ─────────────
+rsiLongOk  = not useRsi or (rsiSmth > 45 and rsiSmth < rsiOB and rsiSmth > rsiSmth[2])
+rsiShortOk = not useRsi or (rsiSmth < 55 and rsiSmth > rsiOS and rsiSmth < rsiSmth[2])
+macdLongOk  = not useMacd or (macdLine > sigLine and histLine > histLine[1] and histLine > 0)
+macdShortOk = not useMacd or (macdLine < sigLine and histLine < histLine[1] and histLine < 0)
+adxFull    = adxVal >= adxFullMin
+adxPartial = adxVal >= adxPartMin and adxVal < adxFullMin
+adxOk      = not useAdx or adxVal >= adxPartMin
+volRegimeOk = not useVlt or (atrPct >= atrMinPct and atrPct <= atrMaxPct)
+volumeOk    = not useVol or volume > volSma * volMult
+
+// ───────────── MOMENTUM SQUEEZE ─────────────
+basis   = ta.sma(close, sqzLen)
+dev     = bbMult * ta.stdev(close, sqzLen)
+bbUpper = basis + dev
+bbLower = basis - dev
+kcRange = ta.sma(ta.tr(true), sqzLen)
+kcUpper = basis + kcMult * kcRange
+kcLower = basis - kcMult * kcRange
+squeezeOn    = useSqz and bbLower > kcLower and bbUpper < kcUpper
+squeezeFired = useSqz and squeezeOn[1] and not squeezeOn
+
+// ───────────── DIVERGENCE GUARD ─────────────
+bearDivg = close > close[2] and not (rsiSmth > rsiSmth[2])
+bullDivg = close < close[2] and not (rsiSmth < rsiSmth[2])
+noBearDivg = not bearDivg
+noBullDivg = not bullDivg
+
+// ───────────── ENTRY TRIGGERS ─────────────
+emaCrossUp   = ta.crossover(fastEma, trigEma)
+emaCrossDown = ta.crossunder(fastEma, trigEma)
+pullbackLong  = close > trigEma and low  <= trigEma + atrVal * 0.30 and close > open
+pullbackShort = close < trigEma and high >= trigEma - atrVal * 0.30 and close < open
+triggerLong  = reqCross ? emaCrossUp   : (emaCrossUp   or bosUp   or pullbackLong  or squeezeFired)
+triggerShort = reqCross ? emaCrossDown : (emaCrossDown or bosDown or pullbackShort or squeezeFired)
+
+// ───────────── CONFLUENCE SCORE (100-pt, identical to APEX v5) ─────────────
+tStackLong  = emaBullStack ? 14 : emaBullPart ? 7 : 0
+tStackShort = emaBearStack ? 14 : emaBearPart ? 7 : 0
+tScoreLong  = (priceBullTrend ? 12 : 0) + tStackLong  + (htfBull ? 9 : 0)
+tScoreShort = (priceBearTrend ? 12 : 0) + tStackShort + (htfBear ? 9 : 0)
+
+adxPts = adxFull ? 9 : adxPartial ? 4 : 0
+mScoreLong  = (rsiLongOk  ? 9 : 0) + (macdLongOk  ? 11 : 0) + adxPts + (anchorRespBull ? 6 : 0)
+mScoreShort = (rsiShortOk ? 9 : 0) + (macdShortOk ? 11 : 0) + adxPts + (anchorRespBear ? 6 : 0)
+
+sScoreLong  = not useStr ? 20 : bosUp   ? 20 : structLongOk  ? 10 : 0
+sScoreShort = not useStr ? 20 : bosDown ? 20 : structShortOk ? 10 : 0
+
+volScore = not useVol ? 5 : volumeOk ? 5 : 0
+vrScore  = not useVlt ? 5 : volRegimeOk ? 5 : 0
+
+longScore  = math.min(tScoreLong  + mScoreLong  + sScoreLong  + volScore + vrScore, 100)
+shortScore = math.min(tScoreShort + mScoreShort + sScoreShort + volScore + vrScore, 100)
+
+// ───────────── SIGNAL GENERATION ─────────────
+var int lastSigBar = na
+onCooldown = not na(lastSigBar) and (bar_index - lastSigBar) < cooldown
+
+longSignal  = triggerLong  and priceBullTrend and htfBull and rsiLongOk  and macdLongOk  and adxOk and volumeOk and structLongOk  and volRegimeOk and noBearDivg and longScore  >= minScore and not onCooldown
+shortSignal = triggerShort and priceBearTrend and htfBear and rsiShortOk and macdShortOk and adxOk and volumeOk and structShortOk and volRegimeOk and noBullDivg and shortScore >= minScore and not onCooldown
+
+finalLong  = longSignal  and (not shortSignal or longScore  > shortScore)
+finalShort = shortSignal and (not longSignal  or shortScore > longScore)
+
+if finalLong or finalShort
+    lastSigBar := bar_index
+
+allowLong  = tradeDir != "Short"
+allowShort = tradeDir != "Long"
+
+// ───────────── RISK MODEL (identical stop math to APEX v5) ─────────────
+longAtrStop  = close - atrVal * slMult
+longStructSt = swingLow - atrVal * swBuf
+longWork     = useWide ? math.min(longAtrStop, longStructSt) : longAtrStop
+longRisk     = close - longWork
+
+shortAtrStop  = close + atrVal * slMult
+shortStructSt = swingHigh + atrVal * swBuf
+shortWork     = useWide ? math.max(shortAtrStop, shortStructSt) : shortAtrStop
+shortRisk     = shortWork - close
+
+// persisted trade state
+var float eStop = na
+var float eTP   = na
+var float eRisk = na
+var int   eBar  = na
+
+// ───────────── ENTRIES ─────────────
+if finalLong and allowLong and strategy.position_size <= 0
+    strategy.entry("L", strategy.long)
+    eStop := longWork
+    eRisk := longRisk
+    eTP   := close + longRisk * tpR
+    eBar  := bar_index
+
+if finalShort and allowShort and strategy.position_size >= 0
+    strategy.entry("S", strategy.short)
+    eStop := shortWork
+    eRisk := shortRisk
+    eTP   := close - shortRisk * tpR
+    eBar  := bar_index
+
+// ───────────── EXITS ─────────────
+inLong  = strategy.position_size > 0
+inShort = strategy.position_size < 0
+
+trailPts = eRisk * trailR / syminfo.mintick
+trailOff = atrVal * trailAtr / syminfo.mintick
+
+if inLong
+    if exitMode == "Take-profit + stop"
+        strategy.exit("Lx", from_entry="L", stop=eStop, limit=eTP)
+    else if exitMode == "ATR trail"
+        strategy.exit("Lx", from_entry="L", stop=eStop, trail_points=trailPts, trail_offset=trailOff)
+    else
+        strategy.exit("Lx", from_entry="L", stop=eStop)
+    if exitMode == "Time stop" and bar_index - eBar >= maxBars
+        strategy.close("L")
+    if exitOpp and finalShort
+        strategy.close("L")
+
+if inShort
+    if exitMode == "Take-profit + stop"
+        strategy.exit("Sx", from_entry="S", stop=eStop, limit=eTP)
+    else if exitMode == "ATR trail"
+        strategy.exit("Sx", from_entry="S", stop=eStop, trail_points=trailPts, trail_offset=trailOff)
+    else
+        strategy.exit("Sx", from_entry="S", stop=eStop)
+    if exitMode == "Time stop" and bar_index - eBar >= maxBars
+        strategy.close("S")
+    if exitOpp and finalLong
+        strategy.close("S")
+
+// ───────────── PLOTS ─────────────
+plot(fastEma,   "Fast EMA",   color=color.new(color.aqua, 0))
+plot(trigEma,   "Trigger EMA", color=color.new(color.orange, 0))
+plot(trendEma,  "Trend EMA",  color=color.new(color.gray, 0))
+plot(anchorEma, "Anchor EMA", color=color.new(color.blue, 0))

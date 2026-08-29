@@ -23,7 +23,20 @@ CONSTS = {
 NAMESPACES = ("color", "plot", "location", "shape", "size", "text", "xloc", "yloc",
               "barmerge", "display", "format", "scale", "hline", "label", "line",
               "table", "box", "alert", "session", "adjustment", "extend",
-              "font", "dayofweek", "currency", "math", "position", "order")
+              "font", "dayofweek", "currency", "math", "position", "order",
+              "barstate", "chart", "earnings", "dividends", "splits")
+
+
+_MISS = object()
+_SPECIAL = {
+    "bar_index": lambda c: c.i,
+    "last_bar_index": lambda c: c.n - 1,
+    "na": lambda c: NAN,
+    "hl2": lambda c: (c.cur("high") + c.cur("low")) / 2,
+    "hlc3": lambda c: (c.cur("high") + c.cur("low") + c.cur("close")) / 3,
+    "ohlc4": lambda c: (c.cur("open") + c.cur("high") + c.cur("low") + c.cur("close")) / 4,
+    "hlcc4": lambda c: (c.cur("high") + c.cur("low") + 2 * c.cur("close")) / 4,
+}
 
 
 class Series:
@@ -68,6 +81,7 @@ class Context:
         self.funcs = {}
         self.state = {}
         self._var_inited = set()
+        self._icache = {}
         self.inputs = {}
         self.plots = {}
         self.param_overrides = {}
@@ -109,49 +123,51 @@ class Context:
 
     # ---- name resolution ----
     def resolve(self, name, scope):
-        if scope and name in scope:
+        if scope is not None and name in scope:
             return scope[name]
-        if name in self.series:
-            return self.series[name].get(self.i)
-        if name == "bar_index":
-            return self.i
-        if name == "last_bar_index":
-            return self.n - 1
-        if name == "na":
-            return NAN
-        if name in ("hl2",):
-            return (self.cur("high") + self.cur("low")) / 2
-        if name == "hlc3":
-            return (self.cur("high") + self.cur("low") + self.cur("close")) / 3
-        if name == "ohlc4":
-            return (self.cur("open") + self.cur("high") + self.cur("low") + self.cur("close")) / 4
-        if name == "hlcc4":
-            return (self.cur("high") + self.cur("low") + 2 * self.cur("close")) / 4
-        if name in CONSTS:
-            return CONSTS[name]
-        b = self.broker
-        strat = {
-            "strategy.position_size": b.pos_qty,
-            "strategy.position_avg_price": b.pos_avg,
-            "strategy.equity": b.equity(self.cur("close")),
-            "strategy.initial_capital": b.cfg["initial_capital"],
-            "strategy.openprofit": b.pos_qty * (self.cur("close")) - sum(l["dir"] * l["qty"] * l["price"] for l in b.lots),
-            "strategy.netprofit": b.equity(self.cur("close")) - b.cfg["initial_capital"] -
-            (b.pos_qty * self.cur("close") - sum(l["dir"] * l["qty"] * l["price"] for l in b.lots)),
-            "strategy.opentrades": len(b.lots),
-            "strategy.closedtrades": len(b.trades),
-            "strategy.wintrades": sum(1 for t in b.trades if t["pnl"] > 0),
-            "strategy.losstrades": sum(1 for t in b.trades if t["pnl"] < 0),
-        }
-        if name in strat:
-            return strat[name]
-        if name == "syminfo.mintick":
-            return b.cfg["mintick"]
-        if isinstance(name, str) and "." in name and name.split(".")[0] in NAMESPACES:
-            return None
-        if isinstance(name, str) and name.split(".")[0] in ("syminfo", "timeframe", "chart", "ticker"):
-            return ""
+        s = self.series.get(name)
+        if s is not None:
+            return s.get(self.i)
+        v = CONSTS.get(name, _MISS)
+        if v is not _MISS:
+            return v
+        f = _SPECIAL.get(name)
+        if f is not None:
+            return f(self)
+        if "." in name:
+            head = name[:name.index(".")]
+            if name.startswith("strategy."):
+                return self._strat_read(name)
+            if head in NAMESPACES:
+                return None
+            if head in ("syminfo", "timeframe", "chart", "ticker"):
+                return "" if name != "syminfo.mintick" else self.broker.cfg["mintick"]
         self.warn(f"unknown identifier '{name}' -> na")
+        return NAN
+
+    def _strat_read(self, name):
+        b = self.broker
+        if name == "strategy.position_size":
+            return b.pos_qty
+        if name == "strategy.position_avg_price":
+            return b.pos_avg
+        if name == "strategy.equity":
+            return b.equity(self.cur("close"))
+        if name == "strategy.initial_capital":
+            return b.cfg["initial_capital"]
+        if name == "strategy.opentrades":
+            return len(b.lots)
+        if name == "strategy.closedtrades":
+            return len(b.trades)
+        if name == "strategy.wintrades":
+            return sum(1 for t in b.trades if t["pnl"] > 0)
+        if name == "strategy.losstrades":
+            return sum(1 for t in b.trades if t["pnl"] < 0)
+        if name in ("strategy.openprofit", "strategy.netprofit"):
+            unreal = b.pos_qty * self.cur("close") - sum(l["dir"] * l["qty"] * l["price"] for l in b.lots)
+            if name == "strategy.openprofit":
+                return unreal
+            return b.equity(self.cur("close")) - b.cfg["initial_capital"] - unreal
         return NAN
 
     # ---- expression eval ----
@@ -165,6 +181,8 @@ class Context:
             return e["v"]
         if t == "na":
             return NAN
+        if t == "list":
+            return [self.ev(x, scope) for x in e["items"]]
         if t == "name":
             return self.resolve(e["v"], scope)
         if t == "member":
@@ -315,6 +333,10 @@ class Context:
         if name == "plot":
             self._plot(e, args, kw)
             return None
+        if name in ("request.security", "security"):
+            # approximation: evaluate the expression on the current timeframe
+            self.warn("request.security is approximated on the chart timeframe")
+            return args[2] if len(args) > 2 else NAN
         fn = self.reg.get(name)
         if fn is None:
             self.warn(f"unimplemented function '{name}()' -> na")
@@ -359,7 +381,10 @@ class Context:
         rec["data"][self.i] = None if (v is None or (isinstance(v, float) and math.isnan(v))) else float(v)
 
     def _input(self, e, name, args, kw):
-        key = e.get("_lhs") or f"input_{e['cs']}"
+        cs = e["cs"]
+        if cs in self._icache:
+            return self._icache[cs]
+        key = e.get("_lhs") or f"input_{cs}"
         default = kw.get("defval", args[0] if args else 0)
         title = kw.get("title") or (args[1] if len(args) > 1 and isinstance(args[1], str) else key)
         typ = name.split(".")[1] if "." in name else "generic"
@@ -368,17 +393,20 @@ class Context:
             "min": kw.get("minval"), "max": kw.get("maxval"), "step": kw.get("step"),
             "options": kw.get("options"),
         })
+        val = rec["default"]
         if key in self.param_overrides:
             ov = self.param_overrides[key]
             try:
                 if isinstance(default, bool):
-                    return bool(ov)
-                if isinstance(default, (int, float)):
-                    return float(ov)
-                return ov
+                    val = ov.strip().lower() in ("true", "1", "yes") if isinstance(ov, str) else bool(ov)
+                elif isinstance(default, (int, float)):
+                    val = float(ov)
+                else:
+                    val = ov
             except (TypeError, ValueError):
-                return default
-        return rec["default"]
+                val = default
+        self._icache[cs] = val
+        return val
 
     def _strategy(self, name, args, kw, e):
         b = self.broker

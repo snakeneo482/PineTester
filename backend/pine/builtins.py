@@ -479,6 +479,30 @@ def ta_supertrend(ctx, cs, a, kw):
     return (st, -tr)  # TV: negative direction == uptrend
 
 
+def ta_dmi(ctx, cs, a, kw):
+    dilen = int(a[0])
+    adxlen = int(a[1]) if len(a) > 1 else dilen
+    i = ctx.i
+    h, l = ctx.H[i], ctx.L[i]
+    ph = ctx.H[i - 1] if i > 0 else h
+    pl = ctx.L[i - 1] if i > 0 else l
+    up = h - ph
+    down = pl - l
+    plus_dm = up if (up > down and up > 0) else 0.0
+    minus_dm = down if (down > up and down > 0) else 0.0
+    trur = _rma(ctx, cs, _tr(ctx), dilen, "tr")
+    pr = _rma(ctx, cs, plus_dm, dilen, "p")
+    mr = _rma(ctx, cs, minus_dm, dilen, "m")
+    if isna(trur) or trur == 0 or isna(pr) or isna(mr):
+        return (NAN, NAN, NAN)
+    plus = 100.0 * pr / trur
+    minus = 100.0 * mr / trur
+    ssum = plus + minus
+    dx = 100.0 * abs(plus - minus) / (ssum if ssum != 0 else 1.0)
+    adx = _rma(ctx, cs, dx, adxlen, "adx")
+    return (plus, minus, adx)
+
+
 def ta_sar(ctx, cs, a, kw):
     start = num(a[0]) if a else 0.02
     inc = num(a[1]) if len(a) > 1 else 0.02
@@ -530,7 +554,7 @@ TA = {
     "ta.linreg": ta_linreg, "ta.cci": ta_cci,
     "ta.stoch": ta_stoch, "ta.wpr": ta_wpr, "ta.cmo": ta_cmo, "ta.tsi": ta_tsi,
     "ta.percentrank": ta_percentrank, "ta.median": ta_median,
-    "ta.supertrend": ta_supertrend, "ta.sar": ta_sar,
+    "ta.supertrend": ta_supertrend, "ta.sar": ta_sar, "ta.dmi": ta_dmi,
 }
 
 

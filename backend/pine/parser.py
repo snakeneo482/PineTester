@@ -253,8 +253,11 @@ class Parser:
     def _dotted(self, e):
         if e["t"] == "name":
             return e["v"]
+        if e["t"] == "na":
+            return "na"
         if e["t"] == "member":
-            return self._dotted(e["e"]) + "." + e["name"]
+            base = self._dotted(e["e"])
+            return base + "." + e["name"] if base else None
         return None
 
     def args(self):
@@ -299,6 +302,14 @@ class Parser:
             e = self.expr()
             self.expect("OP", ")")
             return e
+        if self.accept("OP", "["):
+            items = []
+            if not self.at("OP", "]"):
+                items.append(self.expr())
+                while self.accept("OP", ","):
+                    items.append(self.expr())
+            self.expect("OP", "]")
+            return {"t": "list", "items": items}
         if x[0] == "NAME":
             self.nxt()
             return {"t": "name", "v": x[1]}

@@ -1,0 +1,5 @@
+data/
+selftest.py
+.github/
+*.md
+!README.md

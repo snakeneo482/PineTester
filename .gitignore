@@ -1,0 +1,22 @@
+# data cache
+/data/
+*.csv.gz
+*.parquet
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# vercel
+.vercel/
+
+# editors / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

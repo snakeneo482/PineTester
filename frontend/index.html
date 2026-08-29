@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PineTester</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  :root{
+    --bg:#0d1117;--panel:#161b22;--panel2:#1c2129;--border:#2a323d;--fg:#e6edf3;
+    --muted:#8b949e;--accent:#2f81f7;--green:#3fb950;--red:#f85149;--yellow:#d29922;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{font:13.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--fg)}
+  a{color:var(--accent);text-decoration:none}
+  header{display:flex;align-items:center;gap:12px;padding:9px 16px;border-bottom:1px solid var(--border);background:var(--panel)}
+  header h1{font-size:15px;margin:0;font-weight:700;letter-spacing:.3px}
+  header .tag{color:var(--muted);font-size:12px}
+  header .sp{flex:1}
+  .wrap{display:grid;grid-template-columns:430px 1fr;height:calc(100% - 41px)}
+  .left,.right{overflow:auto}
+  .left{border-right:1px solid var(--border);padding:14px}
+  .right{padding:14px 16px}
+  h3.sec{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:16px 0 8px}
+  .CodeMirror{height:330px;border:1px solid var(--border);border-radius:8px;font-size:12.5px}
+  label{font-size:11px;color:var(--muted);display:block;margin-bottom:3px}
+  select,input{width:100%;background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:6px 7px;font-size:12.5px}
+  select:focus,input:focus{outline:1px solid var(--accent);border-color:var(--accent)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+  .row{margin-bottom:8px}
+  .chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}
+  .chip{background:var(--panel2);border:1px solid var(--border);border-radius:20px;padding:3px 10px;font-size:11.5px;cursor:pointer;color:var(--muted)}
+  .chip:hover{color:var(--fg);border-color:var(--accent)}
+  button.primary{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:11px;font-weight:700;cursor:pointer;width:100%;font-size:13.5px;margin-top:14px}
+  button.primary:disabled{opacity:.55;cursor:wait}
+  button.mini{background:var(--panel2);border:1px solid var(--border);color:var(--fg);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer}
+  button.mini:hover{border-color:var(--accent)}
+  .est{font-size:11.5px;color:var(--muted);margin-top:5px}
+  .est.bad{color:var(--red)}
+  .inputs{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px}
+  .inputs .ir{display:grid;grid-template-columns:1fr 110px;gap:8px;align-items:center;margin-bottom:6px}
+  .inputs .ir:last-child{margin-bottom:0}
+  .tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:14px}
+  .tabs button{background:var(--panel);border:1px solid var(--border);color:var(--muted);padding:6px 13px;border-radius:7px;cursor:pointer;font-size:12.5px}
+  .tabs button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .tab{display:none}
+  .tab.show{display:block}
+  .hero{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:14px}
+  .hero .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px}
+  .hero .k{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+  .hero .v{font-size:21px;font-weight:700;margin-top:3px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:9px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:9px 11px}
+  .card .k{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .card .v{font-size:16px;font-weight:600;margin-top:2px}
+  .pos{color:var(--green)} .neg{color:var(--red)} .neu{color:var(--fg)}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:right;padding:5px 8px;border-bottom:1px solid var(--border);white-space:nowrap}
+  th{cursor:pointer;color:var(--muted);position:sticky;top:0;background:var(--bg)}
+  th:first-child,td:first-child{text-align:left}
+  tbody tr:hover{background:var(--panel)}
+  .tablewrap{max-height:70vh;overflow:auto;border:1px solid var(--border);border-radius:8px}
+  .warn{background:#2b2410;border:1px solid #6b5518;color:#e3c46a;padding:9px 11px;border-radius:8px;font-size:12px;white-space:pre-wrap;margin-bottom:12px}
+  .err{background:#2a1214;border:1px solid #7d1a1a;color:#f0a0a0;padding:12px;border-radius:8px;font-size:12px;white-space:pre-wrap;overflow:auto;max-height:60vh}
+  .muted{color:var(--muted);font-size:12px}
+  #chartbox{width:100%;height:420px;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+  .chartctl{display:flex;gap:8px;align-items:center;margin:8px 0;flex-wrap:wrap}
+  canvas{max-width:100%}
+  .heat td{width:44px;height:30px;text-align:center;border:1px solid var(--bg);font-size:11px}
+  .overlay{position:fixed;inset:0;background:rgba(8,11,16,.78);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px;z-index:50}
+  .overlay.hide{display:none}
+  .spinner{width:38px;height:38px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .opt-grid{display:grid;gap:8px;grid-template-columns:1fr 1fr}
+  .kbd{background:var(--panel2);border:1px solid var(--border);border-radius:4px;padding:1px 5px;font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Pine<span style="color:var(--accent)">Tester</span></h1>
+  <span class="tag">Pine v5 (subset) backtester · Binance Vision data</span>
+  <span class="sp"></span>
+  <span class="muted">run: <span class="kbd">Ctrl</span>+<span class="kbd">Enter</span></span>
+  <a id="ghlink" href="https://github.com/snakeneo482/PineTester" target="_blank">GitHub ↗</a>
+</header>
+
+<div class="wrap">
+  <div class="left">
+    <div class="row">
+      <label>Strategy preset</label>
+      <div style="display:flex;gap:6px">
+        <select id="preset"></select>
+        <button class="mini" id="loadPreset">Load</button>
+      </div>
+    </div>
+    <textarea id="code"></textarea>
+
+    <h3 class="sec">Data</h3>
+    <div class="grid2">
+      <div class="row"><label>Symbol</label><select id="symbol"></select></div>
+      <div class="row"><label>Market</label><select id="market"></select></div>
+      <div class="row"><label>Timeframe</label><select id="timeframe"></select></div>
+      <div class="row"><label>Tick size</label><input id="mintick" value="0.01"></div>
+      <div class="row"><label>Start date</label><input id="start" type="date"></div>
+      <div class="row"><label>End date</label><input id="end" type="date"></div>
+    </div>
+    <div class="chips" id="datechips">
+      <span class="chip" data-range="ytd">YTD</span>
+      <span class="chip" data-range="1">1Y</span>
+      <span class="chip" data-range="2">2Y</span>
+      <span class="chip" data-range="3">3Y</span>
+      <span class="chip" data-range="5">5Y</span>
+    </div>
+    <div class="est" id="est"></div>
+
+    <h3 class="sec">Account &amp; execution</h3>
+    <div class="row">
+      <label>Starting capital ($)</label>
+      <input id="cap" placeholder="strategy() default" inputmode="numeric">
+      <div class="chips">
+        <span class="chip" data-cap="1000">$1k</span>
+        <span class="chip" data-cap="10000">$10k</span>
+        <span class="chip" data-cap="50000">$50k</span>
+        <span class="chip" data-cap="100000">$100k</span>
+        <span class="chip" data-cap="1000000">$1M</span>
+      </div>
+    </div>
+    <div class="grid2">
+      <div class="row">
+        <label>Order size type</label>
+        <select id="qtype">
+          <option value="">strategy() default</option>
+          <option value="pct">% of equity</option>
+          <option value="cash">cash per trade</option>
+          <option value="fixed">fixed units</option>
+        </select>
+      </div>
+      <div class="row"><label>Order size value</label><input id="qval" placeholder="optional"></div>
+      <div class="row"><label>Commission %</label><input id="comm" placeholder="e.g. 0.04"></div>
+      <div class="row"><label>Slippage (ticks)</label><input id="slip" placeholder="0"></div>
+    </div>
+
+    <div id="params"></div>
+    <button class="primary" id="run">Run Backtest</button>
+    <p class="muted" style="margin-top:10px" id="hint"></p>
+  </div>
+
+  <div class="right">
+    <div id="empty" class="muted">
+      Pick a preset (or paste your own Pine strategy), choose a pair / timeframe / dates, and hit
+      <b>Run Backtest</b>. The first run for a symbol+timeframe downloads history from
+      data.binance.vision — give it a few seconds.
+    </div>
+
+    <div id="results" style="display:none">
+      <div id="warnbox"></div>
+      <div class="tabs">
+        <button data-tab="summary" class="active">Summary</button>
+        <button data-tab="chart">Chart</button>
+        <button data-tab="trades">Trades</button>
+        <button data-tab="monthly">Monthly</button>
+        <button data-tab="optimize">Optimize</button>
+        <button data-tab="compare">Compare</button>
+        <button data-tab="log">Log</button>
+      </div>
+
+      <div id="tab-summary" class="tab show">
+        <div class="hero" id="hero"></div>
+        <div class="cards" id="cards"></div>
+      </div>
+
+      <div id="tab-chart" class="tab">
+        <div class="chartctl" id="chartctl"></div>
+        <div id="chartbox"></div>
+        <div style="margin-top:14px"><canvas id="eqchart" height="90"></canvas></div>
+        <div style="margin-top:10px"><canvas id="ddchart" height="60"></canvas></div>
+      </div>
+
+      <div id="tab-trades" class="tab">
+        <div class="chartctl">
+          <span class="muted" id="tradenote"></span>
+          <span class="sp" style="flex:1"></span>
+          <button class="mini" id="csv">Export CSV</button>
+        </div>
+        <div class="tablewrap"><table id="tradetbl"></table></div>
+      </div>
+
+      <div id="tab-monthly" class="tab">
+        <div id="heatbox"></div>
+      </div>
+
+      <div id="tab-optimize" class="tab">
+        <p class="muted">Grid-search 1–2 detected inputs. Serverless cap ~240 combos.</p>
+        <div class="opt-grid">
+          <div class="row"><label>Parameter 1</label><select id="op1"></select></div>
+          <div class="row"><label>P1 start / stop / step</label>
+            <div class="grid3"><input id="op1a"><input id="op1b"><input id="op1s"></div></div>
+          <div class="row"><label>Parameter 2 (optional)</label><select id="op2"></select></div>
+          <div class="row"><label>P2 start / stop / step</label>
+            <div class="grid3"><input id="op2a"><input id="op2b"><input id="op2s"></div></div>
+          <div class="row"><label>Optimize for</label><select id="ometric"></select></div>
+          <div class="row" style="display:flex;align-items:end"><button class="mini" id="runopt" style="width:100%;padding:8px">Run optimization</button></div>
+        </div>
+        <div id="optout" style="margin-top:12px"></div>
+      </div>
+
+      <div id="tab-compare" class="tab">
+        <p class="muted">Run the current strategy across multiple pairs.</p>
+        <div id="cmpsyms" class="chips" style="margin-bottom:10px"></div>
+        <button class="mini" id="runcmp">Run comparison</button>
+        <div id="cmpout" style="margin-top:12px"></div>
+      </div>
+
+      <div id="tab-log" class="tab"><pre class="muted" id="logbox" style="white-space:pre-wrap"></pre></div>
+    </div>
+
+    <div id="errbox" style="display:none"></div>
+  </div>
+</div>
+
+<div class="overlay hide" id="overlay">
+  <div class="spinner"></div>
+  <div id="ovtext" class="muted">Running…</div>
+</div>
+
+<script src="/static/presets.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

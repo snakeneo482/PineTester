@@ -8,7 +8,7 @@ equity curve vs buy & hold, a monthly-returns heatmap, a full trade list, a **pa
 optimizer**, and a **multi-pair comparison** — all from OHLCV pulled straight from
 <https://data.binance.vision/>.
 
-![CI](https://github.com/snakeneo482/PineTester/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/builtbyuba/PineTester/actions/workflows/ci.yml/badge.svg)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![python](https://img.shields.io/badge/python-3.12-blue)
 
@@ -17,7 +17,7 @@ optimizer**, and a **multi-pair comparison** — all from OHLCV pulled straight 
 ## Run it locally
 
 ```bash
-git clone https://github.com/snakeneo482/PineTester
+git clone https://github.com/builtbyuba/PineTester
 cd PineTester
 pip install -r requirements.txt
 python run.py
